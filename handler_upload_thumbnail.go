@@ -1,10 +1,13 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -41,30 +44,58 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer file.Close()
-	mediaType := header.Header.Get("Content-Type")
-	imageData, err := io.ReadAll(file)
+	fileExtension, err := getFileExtension(header.Header.Get("Content-Type"))
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to parse video data", err)
-		return
+		respondWithError(w, http.StatusBadRequest, "Failed to parse MIME type.", err)
 	}
-	videoData, err := cfg.db.GetVideo(videoID)
+	fileExtension = strings.Trim(fileExtension, "image/")
+
+	videoMetaData, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusNotFound, "Video metadata not found", err)
 		return
 	}
-	if videoData.UserID != userID {
+	if videoMetaData.UserID != userID {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
-	encodedImageData := base64.StdEncoding.EncodeToString(imageData)
-	URL := fmt.Sprintf("data:%v;base64,%v", mediaType, encodedImageData)
-	videoData.ThumbnailURL = &URL
-
-	err = cfg.db.UpdateVideo(videoData)
+	fullFilePath := path.Join(cfg.assetsRoot, fmt.Sprintf("%v.%v", videoID, fileExtension))
+	out, err := os.Create(fullFilePath)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to save video metadata", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to create file", err)
+		return
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to save thumbnail to file", err)
+		return
 	}
 
-	respondWithJSON(w, http.StatusOK, videoData)
+	URL := fmt.Sprintf("http://localhost:8091/assets/%v.%v", videoID, fileExtension)
+	videoMetaData.ThumbnailURL = &URL
+
+	err = cfg.db.UpdateVideo(videoMetaData)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to save video metadata", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, videoMetaData)
+}
+
+func getFileExtension(mediaType string) (string, error) {
+	parsedType, _, err := mime.ParseMediaType(mediaType)
+	if err != nil {
+		return "", err
+	}
+	if parsedType == "image/jpeg" {
+		return "jpg", nil
+	}
+	if parsedType == "image/png" {
+		return "png", nil
+	}
+	return "", fmt.Errorf("got an invalid image file type")
 }
