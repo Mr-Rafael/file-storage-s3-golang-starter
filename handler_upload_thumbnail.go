@@ -1,13 +1,14 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
 	"path"
-	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -16,6 +17,10 @@ import (
 func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Request) {
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
+	videoKey := make([]byte, 32)
+	rand.Read(videoKey)
+	encodedVideoKey := base64.RawURLEncoding.EncodeToString(videoKey)
+
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Invalid ID", err)
 		return
@@ -48,7 +53,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Failed to parse MIME type.", err)
 	}
-	fileExtension = strings.Trim(fileExtension, "image/")
 
 	videoMetaData, err := cfg.db.GetVideo(videoID)
 	if err != nil {
@@ -60,7 +64,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	fullFilePath := path.Join(cfg.assetsRoot, fmt.Sprintf("%v.%v", videoID, fileExtension))
+	fullFilePath := path.Join(cfg.assetsRoot, fmt.Sprintf("%v.%v", encodedVideoKey, fileExtension))
 	out, err := os.Create(fullFilePath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to create file", err)
@@ -74,7 +78,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	URL := fmt.Sprintf("http://localhost:8091/assets/%v.%v", videoID, fileExtension)
+	URL := fmt.Sprintf("http://localhost:8091/assets/%v.%v", encodedVideoKey, fileExtension)
 	videoMetaData.ThumbnailURL = &URL
 
 	err = cfg.db.UpdateVideo(videoMetaData)
