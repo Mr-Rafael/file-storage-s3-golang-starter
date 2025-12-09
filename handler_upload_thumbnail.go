@@ -49,7 +49,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer file.Close()
-	fileExtension, err := getFileExtension(header.Header.Get("Content-Type"))
+	fileExtension, err := getImageFileExtension(header.Header.Get("Content-Type"))
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Failed to parse MIME type.", err)
 	}
@@ -90,7 +90,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	respondWithJSON(w, http.StatusOK, videoMetaData)
 }
 
-func getFileExtension(mediaType string) (string, error) {
+func getImageFileExtension(mediaType string) (string, error) {
 	parsedType, _, err := mime.ParseMediaType(mediaType)
 	if err != nil {
 		return "", err
