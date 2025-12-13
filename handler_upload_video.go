@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,6 +20,16 @@ import (
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
+
+type streams struct {
+	Streams []stream `json:"streams"`
+}
+
+type stream struct {
+	Index  int `json:"index"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
 	videoIDString := r.PathValue("videoID")
@@ -73,6 +87,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	fmt.Println("Saving video with file extension: ", fileExtension)
 	fullFilePath := path.Join(fmt.Sprintf("tubely-upload.%v", fileExtension))
 	out, err := os.CreateTemp("", fullFilePath)
 	if err != nil {
@@ -89,7 +104,13 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	defer os.Remove(fullFilePath)
 
 	file.Seek(0, io.SeekStart)
-	fileKey := fmt.Sprintf("%v.%v", encodedVideoKey, fileExtension)
+	aspectRatio, err := getVideoAspectRatio(out.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to get the video's aspect ratio", err)
+		return
+	}
+	fmt.Print("Got the following aspect ratio: ", aspectRatio)
+	fileKey := fmt.Sprintf("%v/%v.%v", aspectRatio, encodedVideoKey, fileExtension)
 	_, err = cfg.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &fileKey,
@@ -122,4 +143,44 @@ func getVideoMediaType(mediaType string) (string, string, error) {
 		return "mp4", parsedType, nil
 	}
 	return "", "", fmt.Errorf("got an invalid video file type")
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	fmt.Println("Running ffprobe with filepath: ", filePath)
+
+	command := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	var out bytes.Buffer
+	command.Stdout = &out
+	if err := command.Run(); err != nil {
+		return "", fmt.Errorf("FFProbe command failed: %v, %v", err, out.String())
+	}
+
+	output := out.Bytes()
+
+	var ffProbeOut streams
+	if err := json.Unmarshal(output, &ffProbeOut); err != nil {
+		return "", fmt.Errorf("failed to get the video dimensions from ffprobe reponse: %v", err)
+	}
+
+	aspectRatio := calculateAspectRatio(ffProbeOut.Streams[0].Width, ffProbeOut.Streams[0].Height)
+	return aspectRatio, nil
+}
+
+func calculateAspectRatio(width, height int) string {
+	ratio := float64(width) / float64(height)
+
+	ratio16to9 := 16.0 / 9.0
+	ratio9to16 := 9.0 / 16.0
+
+	if almostEqual(ratio, ratio16to9, 0.2) {
+		return "landscape"
+	}
+	if almostEqual(ratio, ratio9to16, 0.2) {
+		return "portrait"
+	}
+	return "other"
+}
+
+func almostEqual(a, b, tolerance float64) bool {
+	return math.Abs(a-b) <= tolerance
 }
