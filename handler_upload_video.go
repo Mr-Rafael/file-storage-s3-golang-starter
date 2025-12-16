@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -109,12 +110,23 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Failed to get the video's aspect ratio", err)
 		return
 	}
-	fmt.Print("Got the following aspect ratio: ", aspectRatio)
+	processedVideoPath, err := processVideoForFastStart(out.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to preprocess the video for fast start", err)
+		return
+	}
+	processedFile, err := os.Open(processedVideoPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to open the processed video file", err)
+		return
+	}
+	defer processedFile.Close()
+
 	fileKey := fmt.Sprintf("%v/%v.%v", aspectRatio, encodedVideoKey, fileExtension)
 	_, err = cfg.s3Client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &fileKey,
-		Body:        file,
+		Body:        processedFile,
 		ContentType: aws.String(mediaType),
 	})
 	if err != nil {
@@ -122,7 +134,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	URL := fmt.Sprintf("https://%v.s3.%v.amazonaws.com/%v", cfg.s3Bucket, cfg.s3Region, fileKey)
+	URL := fmt.Sprintf("%s,%s/%s.%s", cfg.s3Bucket, aspectRatio, encodedVideoKey, fileExtension)
 	videoMetaData.VideoURL = &URL
 
 	err = cfg.db.UpdateVideo(videoMetaData)
@@ -183,4 +195,26 @@ func calculateAspectRatio(width, height int) string {
 
 func almostEqual(a, b, tolerance float64) bool {
 	return math.Abs(a-b) <= tolerance
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputFilePath := fmt.Sprintf("%s.processing", filePath)
+	command := exec.Command("ffmpeg", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+	if err := command.Run(); err != nil {
+		return "", fmt.Errorf("failed to pre-process the video for fast start: %v", err)
+	}
+	return outputFilePath, nil
+}
+
+func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	presigner := s3.NewPresignClient(s3Client)
+
+	presignedURL, err := presigner.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expireTime))
+	if err != nil {
+		return "", fmt.Errorf("failed to generate presigned URL for the object: %v", err)
+	}
+	return presignedURL.URL, nil
 }
