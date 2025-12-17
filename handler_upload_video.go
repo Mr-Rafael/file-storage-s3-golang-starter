@@ -14,11 +14,13 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
+	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -136,8 +138,13 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	URL := fmt.Sprintf("%s,%s/%s.%s", cfg.s3Bucket, aspectRatio, encodedVideoKey, fileExtension)
 	videoMetaData.VideoURL = &URL
+	signedVideoMetaData, err := cfg.dbVideoToSignedVideo(videoMetaData)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to get signed video data: %v", err)
+	}
 
-	err = cfg.db.UpdateVideo(videoMetaData)
+	fmt.Printf("Saving the video as: |%s|", *signedVideoMetaData.VideoURL)
+	err = cfg.db.UpdateVideo(signedVideoMetaData)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Failed to save video metadata", err)
 		return
@@ -217,4 +224,20 @@ func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime ti
 		return "", fmt.Errorf("failed to generate presigned URL for the object: %v", err)
 	}
 	return presignedURL.URL, nil
+}
+
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	splitData := strings.Split(*video.VideoURL, ",")
+	if len(splitData) < 2 {
+		return video, nil
+	}
+	bucket := splitData[0]
+	key := splitData[1]
+
+	presignedURL, err := generatePresignedURL(cfg.s3Client, bucket, key, (15 * time.Minute))
+	if err != nil {
+		return database.Video{}, err
+	}
+	video.VideoURL = &presignedURL
+	return video, nil
 }
